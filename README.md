@@ -4,7 +4,7 @@ A geospatial and machine learning project investigating how **urban morphology, 
 
 The project combines **Landsat, MODIS, and other Earth observation datasets** with Google Earth Engine and Python-based geospatial processing to characterize urban environments and study their relationship with land surface temperature.
 
-### What I've worked On
+### What I'm working on
 
 * Extracting **urban and rural extents** using NDBI, NDVI, BSI, and Otsu thresholding.
 * Calculating spectral and built-environment indicators including **NDVI, NDBI, MNDWI, BSI, impervious surface fraction, and building density**.
