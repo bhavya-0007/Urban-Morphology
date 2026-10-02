@@ -1,0 +1,965 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<style>
+  body { margin:0; background:#0d1117; color:#e6edf3; font-family:-apple-system,Segoe UI,Roboto,sans-serif; }
+  #app { display:flex; height:100vh; }
+  #left { flex:1; display:flex; flex-direction:column; padding:14px; min-width:0; }
+  #right { width:320px; padding:14px; background:#161b22; border-left:1px solid #30363d; overflow-y:auto; }
+  h2 { margin:0 0 4px 0; font-size:16px; }
+  h3 { margin:14px 0 6px 0; font-size:13px; color:#c9d1d9; }
+  .sub { color:#8b949e; font-size:12px; margin-bottom:10px; }
+  .controls { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px; align-items:center; }
+  select, button { background:#21262d; color:#e6edf3; border:1px solid #30363d; border-radius:6px; padding:5px 9px; font-size:12px; cursor:pointer; }
+  button.active { background:#1f6feb; border-color:#1f6feb; }
+  button.anom { background:#7d2929; border-color:#b62324; }
+  button.anom.active { background:#da3633; }
+  #canvasWrap { position:relative; flex:1; overflow:auto; border:1px solid #30363d; border-radius:8px; background:#010409; }
+  canvas { image-rendering: pixelated; cursor: crosshair; display:block; }
+  #legendFixed { position:absolute; right:10px; bottom:10px; background:rgba(13,17,23,0.88); border:1px solid #30363d; border-radius:8px; padding:8px 10px; font-size:10px; color:#c9d1d9; display:flex; align-items:center; gap:8px; pointer-events:none; }
+  #legendFixed.catLegend { flex-direction:column; align-items:flex-start; gap:4px; }
+  #legendBarV { width:12px; height:120px; border-radius:4px; }
+  .legScale { display:flex; flex-direction:column; justify-content:space-between; height:120px; }
+  .catRow { display:flex; align-items:center; gap:6px; }
+  .catSwatch { width:11px; height:11px; border-radius:2px; flex:none; }
+  #legTitle { font-weight:600; margin-bottom:4px; font-size:11px; color:#e6edf3; }
+  .row { display:flex; justify-content:space-between; padding:4px 0; border-bottom:1px solid #21262d; font-size:12px; }
+  .row span:first-child { color:#8b949e; }
+  .flagbox { margin-top:10px; padding:8px 10px; border-radius:6px; font-size:12px; line-height:1.4; }
+  .flag1 { background:#3d2200; border:1px solid #d29922; color:#e3b341; }
+  .flag2 { background:#3d0f0f; border:1px solid #da3633; color:#ff7b72; }
+  .flag0 { background:#0f2f1a; border:1px solid #2ea043; color:#3fb950; }
+  #stats { font-size:11px; color:#8b949e; margin-top:6px; }
+  .desc { font-size:11.5px; line-height:1.4; color:#8b949e; padding:6px 0; border-bottom:1px solid #21262d; }
+  .desc b { color:#e6edf3; }
+  .desc.highlight { background:#0d2847; border-radius:4px; padding:6px 8px; margin:0 -8px; }
+  #yearRow { display:flex; align-items:center; gap:10px; margin-bottom:6px; }
+  #yearSlider { flex:1; }
+  #yearLabel { font-weight:600; font-size:13px; min-width:46px; text-align:center; }
+  #loadBanner { display:none; background:#3d2200; border:1px solid #d29922; color:#e3b341; padding:8px 10px; border-radius:6px; font-size:12px; margin-bottom:10px; line-height:1.5; }
+  #loadBanner button { margin-top:6px; }
+  #loadOverlay { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:#8b949e; font-size:13px; background:#010409; }
+</style></head>
+<body>
+<div id="app">
+  <div id="left">
+    <h2>Fishnet Cell Validator</h2>
+    <div class="sub" id="subhead">
+Select an analysis year to visualize fishnet statistics.
+</div>
+
+    <div id="loadBanner"></div>
+
+    <div id="yearRow">
+      <span style="font-size:11px;color:#8b949e;">Analysis Year</span>
+      <input id="yearSlider" type="range" min="0" max="5" step="1" value="0">
+      <span id="yearLabel">—</span>
+      <button id="prevYear">‹</button>
+      <button id="nextYear">›</button>
+      <input type="file" id="manualFiles" accept=".csv,.geojson,.json" multiple style="display:none;">
+      <button id="manualLoadBtn" title="Manually pick CSV files if auto-loading is blocked">Choose CSV files…</button>
+    </div>
+
+    <div class="controls" id="paramBtns"></div>
+    <div class="controls">
+      <button id="anomBtn1" class="anom">⚠ ISF/NDBI conflict</button>
+      <button id="anomBtn2" class="anom">⚠ ISF/NDVI conflict</button>
+      <label style="font-size:11px;color:#8b949e;">grid size <input id="zoom" type="range" min="2" max="8" value="4" style="vertical-align:middle;"></label>
+    </div>
+    <div id="canvasWrap">
+      <canvas id="cv"></canvas>
+      <div id="legendFixed"></div>
+      <div id="loadOverlay">No data loaded yet.</div>
+    </div>
+    <div id="stats"></div>
+  </div>
+  <div id="right">
+    <h2>Cell Inspector</h2>
+    <div id="cellInfo" class="sub">Click a cell in the grid to inspect its computed values.</div>
+
+    <h3>Index &amp; Parameter Reference</h3>
+    <div id="descList"></div>
+  </div>
+</div>
+<script>
+
+/* ============================================================
+   1) DATA SOURCE CONFIG — edit this list only.
+
+   Simplest path (recommended, matches your exports): point "file"
+   at each year's fishnet_features_YYYY.geojson - it already has
+   both the geometry AND every attribute (NDVI, ISF, etc.) per
+   feature, so x,y are computed straight from each polygon's
+   centroid and no join step is needed.
+
+   Alternative path: if you only have a plain CSV (no geometry) for
+   some year, set "file" to that .csv and add a "grid" pointing at
+   a fishnet_grid_YYYY.geojson (cell_id + geometry only) - rows will
+   be joined to it by cell_id automatically.
+   ============================================================ */
+const YEARS = [
+  { label: "2000", file: "data/fishnet_features_2000.geojson" },
+  { label: "2005", file: "data/fishnet_features_2005.geojson" },
+  { label: "2010", file: "data/fishnet_features_2010.geojson" },
+  { label: "2015", file: "data/fishnet_features_2015.geojson" },
+  { label: "2020", file: "data/fishnet_features_2020.geojson" },
+  { label: "2025", file: "data/fishnet_features_2025.geojson" },
+];
+
+const COLS = [
+"x","y",
+"NDVI","NDBI","MNDWI","BSI","UI","ISF",
+"building_density","urban_extent",
+"contrast",
+"morphology_class","anomaly","cell_id"
+];
+const IDX = {}; COLS.forEach((c,i)=>IDX[c]=i);
+
+const params = [
+  {key:"NDVI", label:"NDVI", type:"diverging", ramp:"veg", lo:-0.2, hi:0.8},
+  {key:"NDBI", label:"NDBI", type:"diverging", ramp:"built", lo:-0.65, hi:0.25},
+  {key:"MNDWI", label:"MNDWI", type:"diverging", ramp:"water", lo:-0.6, hi:0.7},
+  {key:"BSI", label:"BSI", type:"diverging", ramp:"barren", lo:-0.4, hi:0.25},
+  {key:"UI", label:"UI", type:"diverging", ramp:"built", lo:-0.75, hi:0.2},
+  {key:"ISF", label:"ISF (Impervious)", type:"sequential", ramp:"built_seq", lo:0, hi:1},
+  {key:"building_density", label:"Building Density", type:"sequential", ramp:"built_seq", lo:0, hi:1},
+  {key:"urban_extent", label:"Urban Extent", type:"sequential", ramp:"built_seq", lo:0, hi:1},
+  {key:"morphology_class", label:"Morphology Class", type:"categorical", lo:0, hi:5},
+];
+
+const DESCRIPTIONS = {
+
+  NDVI: {
+    title: "Normalized Difference Vegetation Index (NDVI)",
+    description: "Measures the amount and health of green vegetation using the Red and Near-Infrared bands.",
+    range: "-0.2 to 0.8",
+    interpretation: [
+      { color:"#2ea043", text:"High (> 0.50): Dense healthy vegetation, forests, parks." },
+      { color:"#d29922", text:"Moderate (0.20 – 0.50): Sparse vegetation, cropland, grassland." },
+      { color:"#da3633", text:"Low (< 0.20): Built-up areas, bare soil or water." }
+    ]
+  },
+
+  NDBI: {
+    title: "Normalized Difference Built-up Index (NDBI)",
+    description: "Enhances impervious and built-up surfaces using SWIR and NIR reflectance.",
+    range: "-0.65 to 0.25",
+    interpretation: [
+      { color:"#da3633", text:"Positive values: Urban / Built-up surfaces." },
+      { color:"#d29922", text:"Around 0: Mixed land cover." },
+      { color:"#2ea043", text:"Negative values: Vegetation and water." }
+    ]
+  },
+
+  MNDWI: {
+    title: "Modified Normalized Difference Water Index (MNDWI)",
+    description: "Enhances open water while suppressing built-up and vegetation signals.",
+    range: "-0.6 to 0.7",
+    interpretation: [
+      { color:"#388bfd", text:"High (> 0.20): Open water." },
+      { color:"#d29922", text:"Near 0: Moist or mixed surfaces." },
+      { color:"#8b5e34", text:"Negative: Land surfaces." }
+    ]
+  },
+
+  BSI: {
+    title: "Bare Soil Index (BSI)",
+    description: "Identifies exposed soil and barren surfaces using SWIR, Red, NIR and Blue bands.",
+    range: "-0.4 to 0.25",
+    interpretation: [
+      { color:"#8b5e34", text:"High values: Bare soil, construction sites." },
+      { color:"#d29922", text:"Moderate: Mixed surfaces." },
+      { color:"#2ea043", text:"Low values: Vegetation or water." }
+    ]
+  },
+
+  UI: {
+    title: "Urban Index (UI)",
+    description: "Highlights impervious urban surfaces similarly to NDBI using SWIR and NIR reflectance.",
+    range: "-0.75 to 0.20",
+    interpretation: [
+      { color:"#da3633", text:"High values: Urban / Impervious surfaces." },
+      { color:"#d29922", text:"Intermediate values: Mixed land cover." },
+      { color:"#2ea043", text:"Low values: Vegetation and natural surfaces." }
+    ]
+  },
+
+  ISF: {
+    title: "Impervious Surface Fraction (ISF)",
+    description: "Represents the fraction (0–1) of impervious materials such as roads, rooftops and pavements within each pixel.",
+    range: "0 – 1",
+    interpretation: [
+      { color:"#2ea043", text:"0.00 – 0.20 : Natural surfaces." },
+      { color:"#d29922", text:"0.20 – 0.50 : Mixed development." },
+      { color:"#da3633", text:"0.50 – 1.00 : Highly urbanized." }
+    ]
+  },
+
+  building_density: {
+    title: "Building Density",
+    description: "Neighborhood density derived from the urban extent using a moving-window kernel.",
+    range: "0 – 1",
+    interpretation: [
+      { color:"#2ea043", text:"Low: Sparse buildings." },
+      { color:"#d29922", text:"Moderate: Residential / Mixed." },
+      { color:"#da3633", text:"High: Dense urban core." }
+    ]
+  },
+
+  urban_extent: {
+    title: "Urban Extent",
+    description: "Binary urban mask produced from ISF, GHSL and GLC-FCS majority voting with water masking.",
+    range: "0 or 1",
+    interpretation: [
+      { color:"#2ea043", text:"0 : Non-Urban." },
+      { color:"#da3633", text:"1 : Urban." }
+    ]
+  },
+
+  morphology_class: {
+    title: "Morphological Typology",
+    description: "Final rule-based urban morphology class derived from density and spectral indices.",
+    range: "0 – 5",
+    interpretation: [
+      { color:"#b2182b", text:"0 : Dense Urban Core" },
+      { color:"#ef8a62", text:"1 : Mixed Built-up" },
+      { color:"#fddbc7", text:"2 : Sparse / Peri-Urban" },
+      { color:"#1a9850", text:"3 : Vegetated Open Space" },
+      { color:"#2166ac", text:"4 : Water" },
+      { color:"#8c6d31", text:"5 : Bare / Transitional" }
+    ]
+  }
+
+};
+
+// Semantic colors for morphology_class - edit labels/colors to match your class codebook.
+const MORPH_CLASSES = [
+  {
+    label: "Dense Urban Core",
+    color: "#b2182b"
+  },
+  {
+    label: "Mixed Built-up",
+    color: "#ef8a62"
+  },
+  {
+    label: "Sparse / Peri-Urban",
+    color: "#fddbc7"
+  },
+  {
+    label: "Vegetated Open Space",
+    color: "#1a9850"
+  },
+  {
+    label: "Water",
+    color: "#2166ac"
+  },
+  {
+    label: "Bare / Transitional",
+    color: "#8c6d31"
+  }
+];
+
+let current = params[0];
+let showAnom1 = false, showAnom2 = false;
+let currentYearIdx = 0;
+const cache = new Array(YEARS.length).fill(null);    // finalized {DATA, W,H,minX,minY,grid,badGrid}
+const rawCache = new Array(YEARS.length).fill(null); // parsed rows awaiting an x/y join: {rows, needsXY}
+let W=0,H=0,minX=0,minY=0,grid=null,DATA=[];
+
+// cell_id -> [x,y] grid index, built from whichever grid GeoJSON(s) have loaded.
+// A single shared map: fishnet cell_id is assumed consistent across years even
+// if the loaded grid geojson differs slightly (e.g. some cells masked out).
+let xyMap = new Map();
+const loadedGridFiles = new Set(); // avoid re-parsing the same grid file twice
+
+// ---------- CSV parsing ----------
+// Canonical column name -> normalized key (lowercased, no spaces/underscores/BOM)
+// so headers like "X", " x ", "﻿x", "Building_Density", "building density" all match.
+function normHeader(h){
+  return h.replace(/^\uFEFF/, '').trim().toLowerCase().replace(/[\s_]+/g,'');
+}
+const NORM_TO_COL = {};
+COLS.forEach(c => NORM_TO_COL[normHeader(c)] = c);
+NORM_TO_COL['id'] = 'cell_id'; // common alias
+// row/col (from the Python fishnet_aggregation export) are the same thing as
+// this viewer's x/y grid index — col=x (east-west), row=y (north-south).
+NORM_TO_COL['row'] = 'y';
+NORM_TO_COL['col'] = 'x';
+NORM_TO_COL['gridrow'] = 'y';
+NORM_TO_COL['gridcol'] = 'x';
+NORM_TO_COL['rowidx'] = 'y';
+NORM_TO_COL['colidx'] = 'x';
+
+function parseCSV(text){
+  text = text.replace(/^\uFEFF/, ''); // strip BOM if present at file start
+  // auto-detect delimiter: comma, semicolon, or tab
+  const firstLine = text.split(/\r?\n/)[0];
+  const delim = (firstLine.match(/;/g)||[]).length > (firstLine.match(/,/g)||[]).length ? ';'
+              : (firstLine.match(/\t/g)||[]).length > (firstLine.match(/,/g)||[]).length ? '\t' : ',';
+  const lines = text.split(/\r?\n/).filter(l=>l.trim().length>0);
+  const headerRaw = lines[0].split(delim).map(h=>h.trim());
+  const hIdx = {}; // canonical COLS name -> column position in this file
+  headerRaw.forEach((h,i)=>{
+    const norm = normHeader(h);
+    if (NORM_TO_COL[norm]) hIdx[NORM_TO_COL[norm]] = i;
+  });
+  const hasXY = ("x" in hIdx) && ("y" in hIdx);
+  const needsXY = !hasXY;
+  if (needsXY && !("cell_id" in hIdx)){
+    console.warn('CSV has neither x/y nor a recognizable cell_id column - cannot place cells on a grid. Raw header was:', headerRaw);
+  }
+  const rows = [];
+  for (let i=1;i<lines.length;i++){
+    const parts = lines[i].split(delim);
+    const rec = new Array(COLS.length).fill(0);
+    for (const c of COLS){
+      if (!(c in hIdx)) continue;
+      const v = parseFloat(parts[hIdx[c]]);
+      rec[IDX[c]] = isNaN(v) ? 0 : v;
+    }
+    if (!("anomaly" in hIdx)) rec[IDX.anomaly] = computeAnomaly(rec);
+    rows.push(rec);
+  }
+  return { rows, needsXY };
+}
+
+// Join x,y into rows that don't have their own, using the cell_id -> [x,y] map
+// built from grid GeoJSON files. Rows whose cell_id isn't found in the map are
+// dropped (can't be placed on the grid) and the count is returned.
+function joinXY(rows){
+  let missing = 0;
+  const joined = [];
+  rows.forEach(rec=>{
+    const xy = xyMap.get(rec[IDX.cell_id]);
+    if (xy){ rec[0]=xy[0]; rec[1]=xy[1]; joined.push(rec); }
+    else missing++;
+  });
+  return { rows: joined, missing };
+}
+
+function computeAnomaly(rec){
+  const isf = rec[IDX.ISF], ndbi = rec[IDX.NDBI], ndvi = rec[IDX.NDVI];
+  if (isf < 0.30 && ndbi > 0.05) return 1; // built signal but ISF too low
+  if (isf > 0.50 && ndvi > 0.30 && ndbi < 0) return 2; // vegetated signal but ISF too high
+  return 0;
+}
+
+// ---------- Fishnet grid GeoJSON parsing ----------
+function pickIdProp(props){
+  const candidates = ['cell_id','CELL_ID','id','ID','Id','FID','OBJECTID','objectid','gridcode','GRID_ID','grid_id'];
+  for (const c of candidates) if (props && props[c] !== undefined && props[c] !== null) return props[c];
+  return null;
+}
+// Reads an explicit grid position straight off a feature's properties, if
+// present (e.g. row/col, grid_row/grid_col, x_idx/y_idx). This is the
+// PREFERRED path — when the geojson already carries the integer cell
+// position (as the Python fishnet_aggregation export does), we use it
+// directly instead of re-deriving position from polygon geometry, which is
+// fragile against floating-point noise from reprojection (see
+// clusterCoords below for why that fallback exists at all).
+function pickGridIndex(props){
+  if (!props) return null;
+  const norm = {};
+  Object.keys(props).forEach(k => norm[normHeader(k)] = props[k]);
+  // 'x'/'y' checked FIRST because that's this viewer's own native column
+  // naming (COLS[0]='x', COLS[1]='y') and the CSV path already recognizes
+  // them directly — a GeoJSON with literal x/y integer properties is a very
+  // plausible real-world case and was previously being missed entirely,
+  // forcing an unnecessary (and fragile) fallback to centroid clustering.
+  const rowKeys = ['y','row','gridrow','rowidx','yidx','gy'];
+  const colKeys = ['x','col','gridcol','colidx','xidx','gx'];
+  let rv, cv;
+  for (const k of rowKeys){ if (norm[k] !== undefined && norm[k] !== null && norm[k] !== '') { rv = norm[k]; break; } }
+  for (const k of colKeys){ if (norm[k] !== undefined && norm[k] !== null && norm[k] !== '') { cv = norm[k]; break; } }
+  if (rv === undefined || cv === undefined) return null;
+  const y = parseInt(rv,10), x = parseInt(cv,10);
+  if (Number.isNaN(x) || Number.isNaN(y)) return null;
+  return [x,y];
+}
+
+// Fallback ONLY used when a geojson has no explicit row/col properties and
+// grid position has to be derived from polygon centroid coordinates.
+// PROBLEM WITH NAIVE ROUNDING: snapping each centroid to a fixed decimal
+// precision (e.g. round(v*1e4)/1e4) assumes the coordinate noise between
+// "same column" cells is smaller than that fixed tolerance. For projected
+// (metre-scale) coordinates this is usually false — reprojection/geometry
+// generation noise on the order of 0.01-1m is much larger than a 1e-4
+// tolerance, so cells that should share one column get split into many
+// near-duplicate columns. That inflates the grid width far past the real
+// column count and produces the "thin vertical stripes with large empty
+// regions" artifact.
+// FIX: cluster sorted unique values adaptively, using the typical (median)
+// spacing between real grid cells as the merge tolerance, instead of a
+// fixed decimal-place cutoff.
+function clusterCoords(values){
+  const sorted = [...new Set(values)].sort((a,b)=>a-b);
+  const map = new Map();
+  if (sorted.length === 0) return map;
+  if (sorted.length === 1){ map.set(sorted[0], 0); return map; }
+  const gaps = [];
+  for (let i=1;i<sorted.length;i++) gaps.push(sorted[i]-sorted[i-1]);
+  let tol = Infinity;
+  if (gaps.length === 1){
+    tol = 1e-9;
+  } else {
+    const gapsSorted = [...gaps].sort((a,b)=>a-b);
+    let bestRatio = -1, splitAt = -1;
+    for (let i=0;i<gapsSorted.length-1;i++){
+      const a = gapsSorted[i], b = gapsSorted[i+1];
+      const ratio = a <= 1e-12 ? (b>1e-12 ? Infinity : -1) : b/a;
+      if (ratio > bestRatio){ bestRatio = ratio; splitAt = i; }
+    }
+    // Lowered from 4x to 2.5x: real reprojected coordinate noise isn't
+    // always as cleanly separated from real spacing as synthetic test data
+    // — being too strict here risks the opposite (and worse) failure mode:
+    // collapsing everything to ONE cluster, which makes the whole grid
+    // render as a single invisible point instead of just imperfectly
+    // striped. A slightly imperfect but visible grid beats a blank one.
+    if (splitAt >= 0 && bestRatio >= 2.5){
+      tol = (gapsSorted[splitAt] + gapsSorted[splitAt+1]) / 2;
+    }
+  }
+  let idx = 0;
+  map.set(sorted[0], 0);
+  for (let i=1;i<sorted.length;i++){
+    if (sorted[i]-sorted[i-1] > tol) idx++;
+    map.set(sorted[i], idx);
+  }
+  // SAFETY NET: if the above still collapsed many distinct raw coordinates
+  // into a single cluster (tol ended up Infinity/too large), that's worse
+  // than the original over-splitting bug — it makes the grid invisible.
+  // In that case, fall back to "every distinct value gets its own index"
+  // (no merging at all). This can reintroduce mild over-splitting, but a
+  // stripey-but-visible grid is diagnosable; a blank one isn't.
+  const nClusters = new Set([...map.values()]).size;
+  if (nClusters === 1 && sorted.length > 20){
+    map.clear();
+    sorted.forEach((v,i)=>map.set(v,i));
+    console.warn('clusterCoords: ratio-based split found no confident boundary across',
+      sorted.length, 'distinct values — falling back to one-index-per-distinct-value ' +
+      'to avoid collapsing the grid to a single point. If this looks wrong, your data ' +
+      'likely has row/col grid-index properties already — check pickGridIndex() key names ' +
+      'match your GeoJSON property names.');
+  }
+  return map;
+}
+
+function invertYIndex(map){
+  // clusterCoords assigns index 0 to the SMALLEST coordinate value. For a
+  // Y/northing coordinate, smallest = SOUTHERNMOST. But render() draws
+  // grid row 0 at the TOP of the canvas, and standard map convention is
+  // north-at-top — so using the raw ascending index puts the southernmost
+  // row at the top, flipping the whole map upside-down. This was confirmed
+  // against real Hyderabad data: without this inversion, the NDVI pattern
+  // only matched the city's actual geography when read bottom-to-top.
+  // Inverting here (0 <-> max) makes index 0 = NORTHERNMOST, matching
+  // render()'s top-down drawing order. Only Y needs this — X/easting
+  // increasing left-to-right on screen already matches east-increasing
+  // grid columns, no inversion needed there.
+  if (map.size === 0) return map;
+  const maxIdx = Math.max(...map.values());
+  const inverted = new Map();
+  map.forEach((v,k)=>inverted.set(k, maxIdx - v));
+  return inverted;
+}
+
+function bboxCenterOfGeometry(geom){
+  if (!geom || !geom.coordinates) return null;
+  let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
+  (function collect(c){
+    if (typeof c[0] === 'number'){
+      const [x,y] = c;
+      if (x<minX)minX=x; if (x>maxX)maxX=x; if (y<minY)minY=y; if (y>maxY)maxY=y;
+    } else { c.forEach(collect); }
+  })(geom.coordinates);
+  if (minX===Infinity) return null;
+  return [(minX+maxX)/2, (minY+maxY)/2];
+}
+
+// Parses a fishnet grid GeoJSON and merges cell_id -> [x,y] into the shared xyMap.
+// x,y are computed by snapping each polygon's centroid onto a regular grid index
+// (sorted unique centroid coordinates), not by reading x/y fields directly, since
+// these exports only carry geometry.
+function loadGridGeoJSON(text){
+  const gj = JSON.parse(text);
+  const feats = gj.features || [];
+
+  // Preferred path: explicit row/col already on the feature properties.
+  let usedExplicit = 0;
+  feats.forEach(f=>{
+    const id = pickIdProp(f.properties);
+    const explicit = pickGridIndex(f.properties);
+    if (id !== null && explicit){ xyMap.set(id, explicit); usedExplicit++; }
+  });
+  if (usedExplicit > 0) return usedExplicit;
+
+  // Fallback: derive from geometry centroids with adaptive clustering
+  // (see clusterCoords doc comment for why this replaces naive rounding).
+  const centroids = [];
+  feats.forEach(f=>{
+    const id = pickIdProp(f.properties);
+    const c = bboxCenterOfGeometry(f.geometry);
+    if (id !== null && c) centroids.push({ id, cx:c[0], cy:c[1] });
+  });
+  if (!centroids.length) return 0;
+  const xi = clusterCoords(centroids.map(c=>c.cx));
+  const yi = invertYIndex(clusterCoords(centroids.map(c=>c.cy)));
+  centroids.forEach(c=>{
+    xyMap.set(c.id, [xi.get(c.cx), yi.get(c.cy)]);
+  });
+  return centroids.length;
+}
+
+function buildGridFromRows(rows){
+  const xs = rows.map(r=>r[0]), ys = rows.map(r=>r[1]);
+  const mnX = Math.min(...xs), mxX = Math.max(...xs);
+  const mnY = Math.min(...ys), mxY = Math.max(...ys);
+  const w = mxX-mnX+1, h = mxY-mnY+1;
+  const g = new Int32Array(w*h).fill(-1);
+  rows.forEach((r,i)=>{ g[(r[1]-mnY)*w + (r[0]-mnX)] = i; });
+  const badGrid = (w<=1 && h<=1 && rows.length>1);
+  console.log(`buildGridFromRows: ${rows.length} rows -> W=${w}, H=${h} (x:${mnX}-${mxX}, y:${mnY}-${mxY})${badGrid ? '  *** COLLAPSED — grid will be invisible ***' : ''}`);
+  return { DATA: rows, W:w, H:h, minX:mnX, minY:mnY, grid:g, badGrid };
+}
+
+// Parses a self-contained "features" GeoJSON (geometry + attribute properties
+// together, like fishnet_features_2020.geojson) into finished rows - x,y come
+// straight from each polygon's centroid, snapped onto a regular grid index, so
+// no separate grid file or join step is needed.
+function parseFeaturesGeoJSON(text){
+  const gj = JSON.parse(text);
+  const feats = gj.features || [];
+
+  // Preferred path: MOST features carry an explicit row/col (or x_idx/y_idx
+  // etc) grid position — use it directly, no geometry math. Requiring
+  // *every single* feature to have it (rather than a majority) meant one
+  // malformed/missing property on a single feature silently killed this
+  // entire fast, robust path and dropped to the fragile centroid-clustering
+  // fallback for the WHOLE file — that mismatch is a likely cause of a
+  // blank/collapsed grid. Features lacking it are just dropped (reported
+  // via console + banner), not treated as disqualifying the whole file.
+  const withExplicit = feats.filter(f => pickGridIndex(f.properties) !== null);
+  console.log(`parseFeaturesGeoJSON: ${withExplicit.length}/${feats.length} features have explicit row/col grid-index properties.`);
+  const explicitMajority = feats.length>0 && withExplicit.length / feats.length >= 0.9;
+  if (explicitMajority){
+    const rows = withExplicit.map(f=>{
+      const props = f.properties || {};
+      const normProps = {};
+      Object.keys(props).forEach(k => normProps[normHeader(k)] = props[k]);
+      const rec = new Array(COLS.length).fill(0);
+      COLS.forEach(c=>{
+        const norm = normHeader(c);
+        if (norm in normProps){
+          const raw = normProps[norm];
+          const v = typeof raw === 'number' ? raw : parseFloat(raw);
+          rec[IDX[c]] = isNaN(v) ? 0 : v;
+        }
+      });
+      const [x,y] = pickGridIndex(props);
+      rec[0] = x; rec[1] = y;
+      if (!('anomaly' in normProps)) rec[IDX.anomaly] = computeAnomaly(rec);
+      return rec;
+    });
+    if (withExplicit.length < feats.length){
+      console.warn(`${feats.length - withExplicit.length} feature(s) lacked a usable row/col property and were dropped.`);
+    }
+    return { rows, needsXY:false, droppedNoIndex: feats.length - withExplicit.length };
+  }
+
+  // Fallback: fewer than 90% of features have explicit row/col, so mixing
+  // explicit + derived indices would create an inconsistent coordinate
+  // space. Derive grid position for ALL features from geometry centroids
+  // instead (see clusterCoords doc comment — naive fixed-decimal rounding
+  // is what caused the original stripe bug; this uses adaptive clustering).
+  console.log('parseFeaturesGeoJSON: falling back to centroid-based clustering for all features.');
+  const centroids = [];
+  const propsList = [];
+  feats.forEach(f=>{
+    const c = bboxCenterOfGeometry(f.geometry);
+    if (!c) return;
+    centroids.push(c);
+    propsList.push(f.properties || {});
+  });
+  if (!centroids.length) return { rows: [], needsXY:false };
+  const xi = clusterCoords(centroids.map(c=>c[0]));
+  const yi = invertYIndex(clusterCoords(centroids.map(c=>c[1])));
+  console.log(`parseFeaturesGeoJSON fallback: derived W=${new Set([...xi.values()]).size}, H=${new Set([...yi.values()]).size} from ${centroids.length} centroids.`);
+  const rows = propsList.map((props,idx)=>{
+    const normProps = {};
+    Object.keys(props).forEach(k => normProps[normHeader(k)] = props[k]);
+    const rec = new Array(COLS.length).fill(0);
+    COLS.forEach(c=>{
+      if (c==='x' || c==='y') return; // filled from centroid below
+      const norm = normHeader(c);
+      if (norm in normProps){
+        const raw = normProps[norm];
+        const v = typeof raw === 'number' ? raw : parseFloat(raw);
+        rec[IDX[c]] = isNaN(v) ? 0 : v;
+      }
+    });
+    rec[0] = xi.get(centroids[idx][0]); rec[1] = yi.get(centroids[idx][1]);
+    if (!('anomaly' in normProps)) rec[IDX.anomaly] = computeAnomaly(rec);
+    return rec;
+  });
+  return { rows, needsXY:false };
+}
+
+// Normalized property-name signature used to tell a self-contained "features"
+// GeoJSON (has index values like NDVI) apart from a geometry-only "grid" file.
+const FEATURE_SIGNATURE_KEYS = ['ndvi','ndbi','isf','mndwi','bsi','morphologyclass','urbanextent','buildingdensity'];
+
+// Routes a loaded file's raw text to the right parser based on its extension
+// and, for geojson/json, whether it looks like a features file or a bare grid.
+// On success either fills rawCache[i] (features) or merges into xyMap (grid).
+function loadYearText(i, filename, text){
+  const lower = filename.toLowerCase();
+  if (lower.endsWith('.geojson') || lower.endsWith('.json')){
+    let gj;
+    try { gj = JSON.parse(text); } catch(e){ console.warn('Could not parse JSON in', filename, e); return; }
+    const feats = gj.features || [];
+    const sample = (feats[0] && feats[0].properties) || {};
+    const normKeys = Object.keys(sample).map(normHeader);
+    const looksLikeFeatures = normKeys.some(k => FEATURE_SIGNATURE_KEYS.includes(k));
+    if (looksLikeFeatures){ rawCache[i] = parseFeaturesGeoJSON(text); }
+    else { loadGridGeoJSON(text); }
+  } else {
+    rawCache[i] = parseCSV(text);
+  }
+}
+
+// ---------- Loading ----------
+const banner = document.getElementById('loadBanner');
+const overlay = document.getElementById('loadOverlay');
+
+function showBanner(msg){ banner.style.display='block'; banner.innerHTML = msg; }
+function hideBanner(){ banner.style.display='none'; }
+
+// Finalize a year: join stored raw rows against the current xyMap and build
+// the render grid. Safe to call repeatedly (e.g. after more grid files load).
+function finalizeYear(i){
+  const raw = rawCache[i];
+  if (!raw) return false;
+  let rows = raw.rows, missing = 0;
+  if (raw.needsXY){
+    if (xyMap.size === 0) return false; // no grid loaded yet, can't join
+    const j = joinXY(rows);
+    rows = j.rows; missing = j.missing;
+  }
+  if (!rows.length) return false;
+  const c = buildGridFromRows(rows);
+  c.missingJoin = missing;
+  cache[i] = c;
+  return true;
+}
+
+async function tryAutoLoad(){
+  overlay.style.display='flex'; overlay.textContent = 'Auto-loading data...';
+  let anyFail = false;
+  // Optional standalone grid files - only needed for YEARS entries whose "file"
+  // is a plain CSV without geometry. Harmless / skipped if not configured.
+  for (const y of YEARS){
+    if (!y.grid || loadedGridFiles.has(y.grid)) continue;
+    try{
+      const res = await fetch(y.grid);
+      if (!res.ok) throw new Error('HTTP '+res.status);
+      loadGridGeoJSON(await res.text());
+      loadedGridFiles.add(y.grid);
+    } catch(e){ /* fine if this year doesn't need a separate grid */ }
+  }
+  for (let i=0;i<YEARS.length;i++){
+    try{
+      const res = await fetch(YEARS[i].file);
+      if (!res.ok) throw new Error('HTTP '+res.status);
+      loadYearText(i, YEARS[i].file, await res.text());
+    } catch(e){ anyFail = true; }
+  }
+  for (let i=0;i<YEARS.length;i++) finalizeYear(i);
+  if (anyFail){
+    showBanner('Some files could not be auto-loaded (likely because this page was opened directly as a file:// URL - browsers block local fetch requests for security). Two fixes:<br>'
+      +'1) Serve this folder locally, e.g. run <code>python3 -m http.server</code> in the folder and open <code>http://localhost:8000/fishnet_validator.html</code>, or<br>'
+      +'2) Click "Choose CSV files..." above and select your <code>fishnet_features_*.geojson</code> files manually.');
+  } else { hideBanner(); }
+  refreshAfterLoad();
+}
+
+document.getElementById('manualLoadBtn').onclick = ()=> document.getElementById('manualFiles').click();
+document.getElementById('manualFiles').addEventListener('change', async (e)=>{
+  const files = [...e.target.files];
+  for (const f of files){
+    const text = await f.text();
+    const idx = YEARS.findIndex(y => (y.file||'').split('/').pop().toLowerCase() === f.name.toLowerCase()
+                                   || (y.grid||'').split('/').pop().toLowerCase() === f.name.toLowerCase());
+    const targetIdx = idx >= 0 ? idx : rawCache.findIndex(c=>c===null);
+    loadYearText(targetIdx >= 0 ? targetIdx : 0, f.name, text);
+  }
+  for (let i=0;i<YEARS.length;i++) finalizeYear(i);
+  hideBanner();
+  refreshAfterLoad();
+});
+
+function refreshAfterLoad(){
+  overlay.style.display='none';
+  const anyLoaded = cache.some(c=>c!==null);
+  const anyPending = rawCache.some((r,i)=>r!==null && cache[i]===null);
+  if (!anyLoaded && anyPending){
+    overlay.style.display='flex';
+    overlay.textContent = 'Feature CSV(s) loaded, waiting on a fishnet grid .geojson to determine cell positions...';
+    return;
+  }
+  if (!anyLoaded){ overlay.style.display='flex'; overlay.textContent='No data loaded yet.'; return; }
+  if (!cache[currentYearIdx]){
+    currentYearIdx = cache.findIndex(c=>c!==null);
+    document.getElementById('yearSlider').value = currentYearIdx;
+  }
+  setYear(currentYearIdx);
+}
+
+function setYear(i){
+  if (!cache[i]) {
+    overlay.style.display='flex';
+    overlay.textContent = rawCache[i] ? `${YEARS[i].label}: waiting on grid geojson to place cells...` : `No data loaded for ${YEARS[i].label} yet.`;
+    return;
+  }
+  overlay.style.display='none';
+  currentYearIdx = i;
+  const c = cache[i];
+  DATA=c.DATA; W=c.W; H=c.H; minX=c.minX; minY=c.minY; grid=c.grid;
+  document.getElementById('yearLabel').textContent = YEARS[i].label;
+  document.getElementById('subhead').textContent = `${DATA.length.toLocaleString()} cells - grid x:${minX}-${minX+W-1}, y:${minY}-${minY+H-1} - click any cell for full values`;
+  if (c.badGrid){
+    showBanner(`Loaded ${DATA.length.toLocaleString()} rows for ${YEARS[i].label}, but couldn't determine distinct x/y positions, so every cell collapsed to one point. `
+      +`Make sure the grid .geojson for this period actually has one polygon feature per cell_id. Open DevTools console (F12) for details.`);
+  } else if (c.missingJoin > 0){
+    showBanner(`${YEARS[i].label}: ${c.missingJoin.toLocaleString()} row(s) had a cell_id not found in the loaded grid geojson and were skipped. If that number looks large, double check the grid file matches this year's features file.`);
+  } else { hideBanner(); }
+  render();
+}
+
+document.getElementById('yearSlider').addEventListener('input', (e)=> setYear(+e.target.value));
+document.getElementById('prevYear').onclick = ()=>{
+  const s = document.getElementById('yearSlider');
+  s.value = Math.max(0, +s.value-1); setYear(+s.value);
+};
+document.getElementById('nextYear').onclick = ()=>{
+  const s = document.getElementById('yearSlider');
+  s.value = Math.min(YEARS.length-1, +s.value+1); setYear(+s.value);
+};
+
+// ---------- UI: param buttons ----------
+const btnWrap = document.getElementById('paramBtns');
+params.forEach(p=>{
+  const b = document.createElement('button');
+  b.textContent = p.label;
+  b.onclick = ()=>{ current = p; render(); renderDescList(); [...btnWrap.children].forEach(x=>x.classList.remove('active')); b.classList.add('active'); };
+  btnWrap.appendChild(b);
+});
+btnWrap.children[0].classList.add('active');
+
+document.getElementById('anomBtn1').onclick = (e)=>{ showAnom1=!showAnom1; e.target.classList.toggle('active'); render(); };
+document.getElementById('anomBtn2').onclick = (e)=>{ showAnom2=!showAnom2; e.target.classList.toggle('active'); render(); };
+
+// ---------- Color ramps ----------
+function lerp3(a,c,t){ return `rgb(${Math.round(a[0]+(c[0]-a[0])*t)},${Math.round(a[1]+(c[1]-a[1])*t)},${Math.round(a[2]+(c[2]-a[2])*t)})`; }
+function ramp3(stops, t){
+  t = Math.max(0,Math.min(1,t));
+  const seg = t<0.5?0:1; const lt = t<0.5?t*2:(t-0.5)*2;
+  return lerp3(stops[seg], stops[seg+1], lt);
+}
+const RAMPS = {
+  veg:    [[140,94,60],[247,240,210],[24,133,66]],     // brown -> pale -> green  (low NDVI -> high)
+  built:  [[24,90,140],[247,247,247],[178,24,43]],      // blue -> white -> red (low NDBI/UI -> high)
+  water:  [[140,94,60],[240,240,240],[19,90,204]],      // brown/dry -> pale -> blue (low MNDWI -> high water)
+  barren: [[24,133,66],[247,240,210],[161,105,45]],     // green -> pale -> brown (low BSI -> high)
+  built_seq: [[24,110,60],[247,214,90],[178,24,43]],    // green(low impervious) -> yellow -> red(high impervious)
+  neutral: [[8,29,88],[65,182,196],[255,237,160]],
+};
+function colorFor(rampKey, t){ return ramp3(RAMPS[rampKey], t); }
+
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+let cell = 4;
+document.getElementById('zoom').oninput = (e)=>{ cell = +e.target.value; render(); };
+
+function render(){
+  if (!DATA.length) return;
+  cv.width = W*cell; cv.height = H*cell;
+  const img = ctx.createImageData(cv.width, cv.height);
+  const ci = IDX[current.key];
+  for (let gy=0; gy<H; gy++){
+    for (let gx=0; gx<W; gx++){
+      const di = grid[gy*W+gx];
+      let r=13,g=17,b=23; // background (no data)
+      if (di>=0){
+        const rec = DATA[di];
+        const v = rec[ci];
+        if (current.type==='categorical'){
+          const mc = MORPH_CLASSES[((v%MORPH_CLASSES.length)+MORPH_CLASSES.length)%MORPH_CLASSES.length];
+          const hex = mc.color;
+          r=parseInt(hex.slice(1,3),16); g=parseInt(hex.slice(3,5),16); b=parseInt(hex.slice(5,7),16);
+        } else {
+          const t = (v - current.lo) / (current.hi - current.lo);
+          const col = colorFor(current.ramp, t);
+          const m = col.match(/\d+/g); r=+m[0]; g=+m[1]; b=+m[2];
+        }
+        const anomVal = rec[IDX.anomaly];
+        if (showAnom1 && anomVal===1){ r=255; g=140; b=0; }
+        if (showAnom2 && anomVal===2){ r=255; g=0; b=110; }
+      }
+      for (let py=0; py<cell; py++){
+        for (let px=0; px<cell; px++){
+          const idx = ((gy*cell+py)*cv.width + (gx*cell+px))*4;
+          img.data[idx]=r; img.data[idx+1]=g; img.data[idx+2]=b; img.data[idx+3]=255;
+        }
+      }
+    }
+  }
+  ctx.putImageData(img,0,0);
+  renderLegend();
+  const nAnom1 = DATA.filter(r=>r[IDX.anomaly]===1).length;
+  const nAnom2 = DATA.filter(r=>r[IDX.anomaly]===2).length;
+  document.getElementById('stats').textContent =
+`${DATA.length.toLocaleString()} fishnet cells loaded • Analysis Year: ${YEARS[currentYearIdx].label} • ${nAnom1.toLocaleString()} ISF/NDBI conflicts • ${nAnom2.toLocaleString()} ISF/NDVI conflicts`;
+}
+
+function renderLegend(){
+  const box = document.getElementById('legendFixed');
+  box.innerHTML = '';
+  if (current.type==='categorical'){
+    box.classList.add('catLegend');
+    const title = document.createElement('div'); title.id='legTitle'; title.textContent = current.label; box.appendChild(title);
+    MORPH_CLASSES.forEach((mc,i)=>{
+      const row = document.createElement('div'); row.className='catRow';
+      row.innerHTML = `<span class="catSwatch" style="background:${mc.color}"></span><span>${i}: ${mc.label}</span>`;
+      box.appendChild(row);
+    });
+  } else {
+    box.classList.remove('catLegend');
+    const stops = RAMPS[current.ramp];
+    const grad = `linear-gradient(to top, rgb(${stops[0]}), rgb(${stops[1]}), rgb(${stops[2]}))`;
+    const scale = document.createElement('div'); scale.className='legScale';
+    scale.innerHTML = `<span>${current.hi}</span><span style="align-self:center;writing-mode:vertical-rl;transform:rotate(180deg);font-weight:600;">${current.label}</span><span>${current.lo}</span>`;
+    const bar = document.createElement('div'); bar.id='legendBarV'; bar.style.background = grad;
+    box.appendChild(bar); box.appendChild(scale);
+  }
+}
+
+// ---------- Right panel: description reference ----------
+function renderDescList(){
+
+    const wrap = document.getElementById("descList");
+
+    const d = DESCRIPTIONS[current.key];
+
+    if(!d){
+        wrap.innerHTML = "";
+        return;
+    }
+
+    let html = `
+        <div class="desc highlight">
+
+            <b style="font-size:15px;">${d.title}</b>
+
+            <br><br>
+
+            ${d.description}
+
+            <br><br>
+
+            <b>Typical Range</b>
+
+            <br>
+
+            ${d.range}
+
+            <br><br>
+
+            <b>Interpretation</b>
+
+            <br><br>
+    `;
+
+    d.interpretation.forEach(item=>{
+        html += `
+            <div style="display:flex;align-items:flex-start;margin-bottom:8px;">
+                <div style="
+                    width:12px;
+                    height:12px;
+                    border-radius:3px;
+                    background:${item.color};
+                    margin-right:10px;
+                    margin-top:3px;
+                    flex:none;
+                "></div>
+
+                <div>${item.text}</div>
+            </div>
+        `;
+    });
+
+    html += "</div>";
+
+    wrap.innerHTML = html;
+}
+// ---------- Cell inspector ----------
+cv.addEventListener('click', (e)=>{
+  const rect = cv.getBoundingClientRect();
+  const px = Math.floor((e.clientX-rect.left) * (cv.width/rect.width));
+  const py = Math.floor((e.clientY-rect.top) * (cv.height/rect.height));
+  const gx = Math.floor(px/cell), gy = Math.floor(py/cell);
+  const di = grid[gy*W+gx];
+  const panel = document.getElementById('cellInfo');
+  if (di<0){ panel.innerHTML = '<div class="sub">No data for this cell.</div>'; return; }
+  const rec = DATA[di];
+  let html =
+`<div class="sub">
+Cell ID: ${rec[IDX.cell_id]}
+&nbsp;&nbsp;|&nbsp;&nbsp;
+Grid Position: (${rec[0]}, ${rec[1]})
+&nbsp;&nbsp;|&nbsp;&nbsp;
+Analysis Year: ${YEARS[currentYearIdx].label}
+</div>`;
+const fields = [
+    ["NDVI", IDX.NDVI],
+    ["NDBI", IDX.NDBI],
+    ["MNDWI", IDX.MNDWI],
+    ["BSI", IDX.BSI],
+    ["UI", IDX.UI],
+    ["ISF", IDX.ISF],
+    ["Building Density", IDX.building_density],
+    ["Urban Extent", IDX.urban_extent],
+    ["GLCM Contrast", IDX.contrast]
+];
+  fields.forEach(([label,i])=>{
+    html += `<div class="row"><span>${label}</span><span>${rec[i]}</span></div>`;
+  });
+
+const cls = Math.max(
+    0,
+    Math.min(
+        5,
+        Math.round(rec[IDX.morphology_class])
+    )
+);
+
+const mc = MORPH_CLASSES[cls];
+
+html += `
+<div class="row">
+    <span>Morphology Class</span>
+    <span>${rec[IDX.morphology_class]} (${mc.label})</span>
+</div>
+`;
+
+  const a = rec[IDX.anomaly];
+  if (a===1) html += `<div class="flagbox flag1">⚠ ISF (${rec[7]}) looks too low given NDBI (${rec[3]}) is clearly positive (built-up signal). Likely ISF endmember/LSMA bug - check that the impervious endmember spectrum, not vegetation, is assigned to f_ISA.</div>`;
+  else if (a===2) html += `<div class="flagbox flag2">⚠ ISF (${rec[7]}) looks too high given NDVI (${rec[2]}) is high (vegetated) and NDBI (${rec[3]}) is negative. This cell is being scored as impervious but spectrally reads as vegetation - check endmember assignment / fraction sign.</div>`;
+  else html += `<div class="flagbox flag0">✓ ISF is internally consistent with NDBI/NDVI direction for this cell.</div>`;
+  panel.innerHTML = html;
+});
+
+renderDescList();
+tryAutoLoad();
+</script>
+</body>
+</html>
